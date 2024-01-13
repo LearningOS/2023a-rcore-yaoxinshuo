@@ -76,10 +76,19 @@ impl TaskManager {
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
     /// But in ch3, we load apps statically, so the first task is a real app.
+    fn update_task_tcb(&self,mut x){
+        let current = inner.current_task;
+        task[current].task_info.syscall_times[x] += 1;
+    }
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
+        task0.task_info.task_status = TaskStatus::Running;
+        for num in task0.task_info.syscall_times.iter_mut(){
+            *num = 0;
+        } 
+        task0.task_info.time = get_time_us();
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -135,6 +144,10 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    fn get_current_info() -> TaskInfo{
+        let current = inner.current_task;
+        task[current].task_info
+    }
 }
 
 /// Run the first task in task list.
@@ -168,4 +181,12 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+pub fn update(mut x){
+    TASK_MANAGER.update_task_tcb(x);
+}
+
+pub fn get_current_task_info() -> TaskInfo{
+    TASK_MANAGER.get_current_info()
 }
