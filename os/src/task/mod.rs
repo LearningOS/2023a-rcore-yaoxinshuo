@@ -9,6 +9,10 @@
 //! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
 //! might not be what you expect.
 
+use crate::{
+    timer::get_time_us,
+    syscall::process::TaskInfo,
+};
 mod context;
 mod switch;
 #[allow(clippy::module_inception)]
@@ -54,6 +58,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_info: TaskInfo::new(),
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -76,15 +81,16 @@ impl TaskManager {
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
     /// But in ch3, we load apps statically, so the first task is a real app.
-    fn update_task_tcb(&self,mut x){
+    fn update_task_tcb(&self,x: usize){
+        let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
-        task[current].task_info.syscall_times[x] += 1;
+        inner.tasks[current].task_info.syscall_times[x] += 1;
     }
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
-        task0.task_info.task_status = TaskStatus::Running;
+        task0.task_info.status = TaskStatus::Running;
         for num in task0.task_info.syscall_times.iter_mut(){
             *num = 0;
         } 
@@ -144,9 +150,10 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
-    fn get_current_info() -> TaskInfo{
+    fn get_current_info(&self) -> TaskInfo{
+        let inner = self.inner.exclusive_access();
         let current = inner.current_task;
-        task[current].task_info
+        return inner.tasks[current].task_info
     }
 }
 
@@ -183,7 +190,7 @@ pub fn exit_current_and_run_next() {
     run_next_task();
 }
 
-pub fn update(mut x){
+pub fn update(x: usize){
     TASK_MANAGER.update_task_tcb(x);
 }
 

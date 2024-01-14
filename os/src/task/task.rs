@@ -1,6 +1,9 @@
 //! Types related to task management
 
 use super::TaskContext;
+use crate::{
+    syscall::process::TaskInfo,
+};
 
 /// The task control block (TCB) of a task.
 #[derive(Copy, Clone)]
