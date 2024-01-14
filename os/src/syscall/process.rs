@@ -235,3 +235,13 @@ pub fn sys_set_priority(_prio: isize) -> isize {
     );
     -1
 }
+
+pub fn enable_deadlock_detect(is_enable: i32) -> i32{
+    if is_enable != 0 && is_enable != 1{
+        return -1
+    }
+    else if has_been_deadlock() {
+        return -1
+    }
+    set_deadlock(is_enable)
+}
