@@ -46,9 +46,23 @@ pub struct ProcessControlBlockInner {
     /// mutex list
     pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
     /// semaphore list
-    pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
+    pub sem_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    /// if deadlock detect
+    pub deadlock_detect: bool,
+    /// mutex_allocation[i] = j means ith mutex is occupied by jth thread
+    pub mutex_allo: Vec<Option<usize>>,
+    /// mutex_need[j] = i means jth thread needs ith mutex
+    pub mutex_need: Vec<Option<usize>>,
+
+    /// semaphore_available
+    pub sem_avai: Vec<usize>,
+    /// semaphore_allocation[i,j] = 
+    pub sem_allo: Vec<Vec<usize>>,
+    /// semaphore_need
+    pub sem_need: Vec<Vec<usize>>,
 }
 
 impl ProcessControlBlockInner {
@@ -117,8 +131,14 @@ impl ProcessControlBlock {
                     tasks: Vec::new(),
                     task_res_allocator: RecycleAllocator::new(),
                     mutex_list: Vec::new(),
-                    semaphore_list: Vec::new(),
+                    sem_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_allo: Vec::new(),
+                    mutex_need: vec![None],
+                    sem_avai: Vec::new(),
+                    sem_allo: vec![Vec::new()],
+                    sem_need: vec![Vec::new()],
                 })
             },
         });
@@ -243,8 +263,14 @@ impl ProcessControlBlock {
                     tasks: Vec::new(),
                     task_res_allocator: RecycleAllocator::new(),
                     mutex_list: Vec::new(),
-                    semaphore_list: Vec::new(),
+                    sem_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_allo: Vec::new(),
+                    mutex_need: vec![None],
+                    sem_avai: Vec::new(),
+                    sem_allo: vec![Vec::new()],
+                    sem_need: vec![Vec::new()],
                 })
             },
         });
@@ -281,5 +307,89 @@ impl ProcessControlBlock {
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+}
+
+impl ProcessControlBlock {
+    pub fn has_been_deadlock_m(&self, tid: usize, mutex_id: usize) -> bool {
+        let mut inner = self.inner_exclusive_access();
+        inner.mutex_need[tid] = Some(mutex_id);
+        if inner.deadlock_detect {
+            let len = inner.thread_count();
+            let mut work: Vec<bool> = inner.mutex_allo.iter().map(|&x| matches!(x, None)).collect();
+            let mutex_num = work.len();
+            let mut finish = vec![false; len];
+            for _ in 0..len {
+                let mut flag = true;
+                for i in 0..len {                    
+                    if !finish[i] {
+                        match inner.mutex_need[i] {
+                            Some(x) if !work[x] => (),
+                            _ => {
+                                finish[i] = true;
+                                flag = false;
+                                for j in 0..mutex_num {
+                                    match inner.mutex_allo[j] {
+                                        Some(y) if y == i => work[j] = true,
+                                        _ => ()
+                                    }
+                                }
+                                break;
+                            } 
+                        }
+                    }
+                }
+                if flag {
+                    inner.mutex_need[tid] = None;
+                    return true;
+                }
+            }
+            false
+        } else {
+            false
+        }
+    }
+
+    pub fn has_been_deadlock_s(&self, tid: usize, sem_id: usize) -> bool {
+        let mut inner = self.inner_exclusive_access();
+        inner.sem_need[tid][sem_id] += 1;
+        if inner.deadlock_detect {
+            let len = inner.thread_count();
+            let sem_len = inner.sem_avai.len();
+            if sem_len == 0 {
+                return false;
+            }
+            let mut work = inner.sem_avai.clone();
+            let mut finish = vec![false; len];
+            for _ in 0..len {
+                let mut flag = true;
+                for i in 0..len {
+                    if !finish[i] {
+                        let mut flag2 = true;
+                        for (j, g) in inner.sem_need[i].iter().enumerate() {
+                            if *g > work[j] {
+                                flag2 = false;
+                                break;
+                            }
+                        }
+                        if flag2 {
+                            finish[i] = true;
+                            flag = false;
+                            for (j, g) in inner.sem_allo[i].iter().enumerate() {
+                                work[j] += g;
+                            }
+                            break;
+                        }
+                    }
+                }
+                if flag {
+                    inner.sem_need[tid][sem_id] -= 1;
+                    return true;
+                }
+            }
+            false
+        } else {
+            false
+        }
     }
 }
