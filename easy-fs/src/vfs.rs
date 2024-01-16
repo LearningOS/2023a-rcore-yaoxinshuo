@@ -184,3 +184,103 @@ impl Inode {
         block_cache_sync_all();
     }
 }
+
+impl Inode {
+    /// fstat
+    pub fn fstat(&self) -> (u32, bool) {
+        let fs = self.fs.lock();
+        let inode_id = fs.get_id_by_block(self.block_id, self.block_offset) as u32;
+        self.read_disk_inode(|disk_inode| {
+            (inode_id, disk_inode.is_dir())
+        })
+    }
+
+    /// only for RootInode
+    pub fn nlink_count(&self, inode_id: u32) -> u32 {
+        self.read_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut nlink: u32 = 0;
+            for i in 0..file_count {
+                let mut dirent = DirEntry::empty();
+                assert_eq!(
+                    root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
+                    DIRENT_SZ,
+                );
+                if dirent.inode_id() == inode_id {
+                    nlink += 1;
+                }
+            }
+            nlink
+        })
+    }
+
+    /// link only for RootInode
+    pub fn link(&self, old_name: String, new_name: String) {
+        let mut fs = self.fs.lock();
+        let old_inode_id = self.read_disk_inode(|root_inode|
+            self.find_inode_id(old_name.as_str(), root_inode)
+        ).unwrap();
+        self.modify_disk_inode(|root_inode| {
+            // append file in the dirent
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            // increase size
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            // write dirent
+            let dirent = DirEntry::new(new_name.as_str(), old_inode_id);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+    }
+
+    /// unlink only for RootInode
+    pub fn unlink(&self, name: String) -> isize {
+        //let fs = self.fs.lock();
+        let inode_id = self.read_disk_inode(|root_inode|
+            self.find_inode_id(name.as_str(), root_inode)
+        ).unwrap();
+        let nlink = self.nlink_count(inode_id);
+        if nlink > 1 {
+            self.modify_disk_inode(|root_inode| {
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                for i in 0..file_count {
+                    let mut dirent = DirEntry::empty();
+                    assert_eq!(
+                        root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
+                        DIRENT_SZ,
+                    );
+                    if dirent.name() == name {
+                        let dirent = DirEntry::empty();
+                        root_inode.write_at(DIRENT_SZ * i, dirent.as_bytes(), &self.block_device);
+                        break;
+                    }
+                }
+            });
+            0
+        } else if nlink == 1 {
+            let inode = self.find(name.as_str()).unwrap();
+            inode.clear();           
+            self.modify_disk_inode(|root_inode| {
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                for i in 0..file_count {
+                    let mut dirent = DirEntry::empty();
+                    assert_eq!(
+                        root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
+                        DIRENT_SZ,
+                    );
+                    if dirent.name() == name {
+                        let dirent = DirEntry::empty();
+                        root_inode.write_at(DIRENT_SZ * i, dirent.as_bytes(), &self.block_device);
+                        break;
+                    }
+                }
+            });
+            0
+        } else {
+            -1
+        }
+    }
+}

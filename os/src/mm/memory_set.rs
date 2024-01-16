@@ -319,6 +319,26 @@ impl MemorySet {
         }
     }
 }
+
+impl MemorySet {
+    /// unmap vpn_range from memset
+    pub fn unmap(&mut self, vpn_range: VPNRange) -> isize {
+        for vpn in vpn_range {
+            match self.translate(vpn) {
+                Some(pte) if pte.is_valid() => (),
+                _ => return -1
+            }
+        }
+        for map_area in self.areas.iter_mut() {
+            for vpn in map_area.vpn_range {
+                if vpn >= vpn_range.get_start() && vpn < vpn_range.get_end() {
+                    map_area.unmap_one(&mut self.page_table, vpn);
+                }
+            }
+        }
+        0
+    }
+}
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
     vpn_range: VPNRange,
