@@ -146,16 +146,16 @@ impl TaskManager {
         inner.tasks[current_id].task_info_inner.syscall_times[syscall_id] += 1;
     }
 
-    fn get_current_task_info(&self, ti: *mut TaskInfo) {
+    fn get_info(&self, ti: *mut TaskInfo) {
         let inner = self.inner.exclusive_access();
         let current_id = inner.current_task;
-        let TaskInfoInner {syscall_times, start_time} = inner.tasks[current_id].task_info_inner;
-
+        let current_task = &inner.tasks[current_id];
+        
         unsafe {
             *ti = TaskInfo {
                 status: TaskStatus::Running,
-                syscall_times,
-                time: get_time_ms() - start_time,
+                syscall_times: current_task.task_info_inner.syscall_times,
+                time: get_time_ms() - current_task.task_info_inner.start_time,
             };
         }
     }
@@ -200,5 +200,5 @@ pub fn record_syscall(syscall_id: usize) {
 }
 
 pub fn get_task_info(ti: *mut TaskInfo) {
-    TASK_MANAGER.get_current_task_info(ti);
+    TASK_MANAGER.get_info(ti);
 }
