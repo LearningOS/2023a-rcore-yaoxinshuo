@@ -5,6 +5,21 @@ use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
+use crate::config::MAX_SYSCALL_NUM;
+
+#[derive(Copy, Clone)]
+pub struct TaskInfoInner {
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+    pub start_time: usize,
+}
+impl TaskInfoInner {
+        pub fn new() -> Self {
+            TaskInfoInner {
+                syscall_times: [0; MAX_SYSCALL_NUM], // 初始化 syscall_times 数组
+                start_time: 0, // 初始化时间
+            }
+        }
+    }
 
 /// The task control block (TCB) of a task.
 pub struct TaskControlBlock {
@@ -13,6 +28,8 @@ pub struct TaskControlBlock {
 
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
+
+    pub task_info_inner: TaskInfoInner,
 
     /// Application address space
     pub memory_set: MemorySet,
@@ -55,9 +72,11 @@ impl TaskControlBlock {
             kernel_stack_top.into(),
             MapPermission::R | MapPermission::W,
         );
+        let task_info_inner = TaskInfoInner::new();
         let task_control_block = Self {
             task_status,
             task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+            task_info_inner,
             memory_set,
             trap_cx_ppn,
             base_size: user_sp,

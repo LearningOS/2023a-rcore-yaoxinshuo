@@ -1,10 +1,18 @@
 //! Process management syscalls
 use crate::{
-    config::MAX_SYSCALL_NUM,
-    task::{
-        change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus,
+    config::{
+        MAX_SYSCALL_NUM
     },
+    task::{
+        task_munmap, task_mmap, change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus,
+    },
+    mm::{
+        virt2phys_addr, VirtAddr
+    },
+    timer::get_time_us,
+    
 };
+use crate::task::get_task_info;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -17,11 +25,11 @@ pub struct TimeVal {
 #[allow(dead_code)]
 pub struct TaskInfo {
     /// Task status in it's life cycle
-    status: TaskStatus,
+    pub status: TaskStatus,
     /// The numbers of syscall called by task
-    syscall_times: [u32; MAX_SYSCALL_NUM],
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
     /// Total running time of task
-    time: usize,
+    pub time: usize,
 }
 
 /// task exits and submit an exit code
@@ -39,31 +47,43 @@ pub fn sys_yield() -> isize {
 }
 
 /// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!("kernel: sys_get_time");
-    -1
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    let virt_addr = VirtAddr(ts as usize);
+    match virt2phys_addr(virt_addr) {
+        Some(phys_addr) => {
+            let us = get_time_us();
+            let kernel_ts = phys_addr.0 as *mut TimeVal;
+            unsafe {
+                *kernel_ts = TimeVal {
+                    sec: us / 1_000_000,
+                    usec: us % 1_000_000,
+                };
+            }
+            0
+        }
+        None => -1,
+    }
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!("kernel: sys_task_info NOT IMPLEMENTED YET!");
-    -1
+    match virt2phys_addr(VirtAddr(_ti as usize)) {
+        Some(phys_addr) => {
+            get_task_info(phys_addr.0 as *mut TaskInfo);
+            0
+        }
+        None => -1,
+    }
 }
 
 // YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+    task_mmap(_start, _len, _port)
 }
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+    task_munmap(_start, _len)
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {

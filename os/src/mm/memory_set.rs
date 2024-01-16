@@ -358,6 +358,14 @@ impl MapArea {
     }
 }
 
+
+impl MemorySet {
+    pub fn munmap(&mut self, vpns:VPNRange){
+        for vpn in vpns {
+            self.areas[0].unmap_one(&mut self.page_table, vpn)
+        }
+    }
+}
 #[derive(Copy, Clone, PartialEq, Debug)]
 /// map type for memory set: identical or framed
 pub enum MapType {
