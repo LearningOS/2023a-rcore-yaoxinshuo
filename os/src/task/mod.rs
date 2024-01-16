@@ -115,3 +115,13 @@ lazy_static! {
 pub fn add_initproc() {
     add_task(INITPROC.clone());
 }
+
+/// Update current task syscall times
+pub fn update_syscall_times(syscall_id: usize) {
+    //trace!("update syscall");
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.syscall_times[syscall_id] += 1;
+    drop(inner);
+    //drop(task);
+}

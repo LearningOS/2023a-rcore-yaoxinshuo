@@ -4,6 +4,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+use crate::task::current_user_token;
 
 bitflags! {
     /// page table entry flags
@@ -212,4 +213,12 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_mut()
+}
+
+/// virtaddr:usize -> physaddr:Physaddr
+pub fn translate_virtaddr_to_physaddr(virt_u: usize) -> Option<usize> {
+    let virt = VirtAddr::from(virt_u);
+    let token = current_user_token();
+    let page = PageTable::from_token(token);
+    page.translate_va(virt).map(|v| usize::from(v))
 }

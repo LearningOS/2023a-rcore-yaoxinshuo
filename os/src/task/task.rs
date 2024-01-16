@@ -1,13 +1,15 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::{TRAP_CONTEXT_BASE, MAX_SYSCALL_NUM};
+use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE, MapPermission, VPNRange};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use crate::syscall::TaskInfo;
+use crate::timer::get_time_ms;
 
 /// Task control block structure
 ///
@@ -68,6 +70,18 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Start time
+    pub start_time: Option<usize>,
+
+    /// Syscall times
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Priority
+    pub priority: isize,
+
+    /// stride
+    pub stride: u64,
 }
 
 impl TaskControlBlockInner {
@@ -84,6 +98,12 @@ impl TaskControlBlockInner {
     }
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
+    }
+    pub fn get_start_time(&self) -> usize {
+        match self.start_time {
+            Some(t) => t,
+            None => 0
+        } 
     }
 }
 
@@ -118,6 +138,10 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    start_time: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: 16,
+                    stride: 0,
                 })
             },
         };
@@ -191,6 +215,10 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    start_time: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: 16,
+                    stride: 0,
                 })
             },
         });
@@ -235,6 +263,115 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+}
+
+impl TaskControlBlock {
+    /// Get task info
+    pub fn get_task_info(&self, ti: *mut TaskInfo) {
+        let inner = self.inner_exclusive_access();
+        //println!("{}, {}", get_time_ms(), inner.get_start_time());
+        unsafe {
+            (*ti).time = get_time_ms() - inner.get_start_time();
+            (*ti).status = inner.get_status();
+            (*ti).syscall_times = inner.syscall_times;
+        }
+        drop(inner);
+    }
+
+    /// mmap
+    pub fn task_mmap(&self, start: usize, len: usize, port: usize) -> isize {
+        if VirtAddr(start).aligned() && (port <= 7usize) && (port != 0) {
+            let mut inner = self.inner_exclusive_access();
+            let (start_va, end_va) = (VirtAddr(start), VirtAddr(start + len));
+            let current_memory_set = &mut inner.memory_set;
+            for vpn in VPNRange::new(start_va.floor(), end_va.ceil()) {
+                match current_memory_set.translate(vpn) {
+                    Some(pte) if pte.is_valid() => return -1,
+                    _ => ()
+                }
+            }
+            let mut map_perm = MapPermission::U;
+            if port & 1 == 1 {
+                map_perm |= MapPermission::R;
+            }
+            if port & 2 == 2 {
+                map_perm |= MapPermission::W;
+            }
+            if port & 4 == 4{
+                map_perm |= MapPermission::X;
+            }
+            current_memory_set.insert_framed_area(start_va, end_va, map_perm);
+            0
+        } else {
+            -1
+        }
+    }
+
+    /// task_mumap
+    pub fn task_munmap(&self, start: usize, len: usize) -> isize {
+        if VirtAddr(start).aligned() {
+            let mut inner = self.inner_exclusive_access();
+            let (start_va, end_va) = (VirtAddr(start), VirtAddr(start + len));
+            let current_memory_set = &mut inner.memory_set;
+            let vpn_range = VPNRange::new(start_va.floor(), end_va.ceil());
+            current_memory_set.unmap(vpn_range)
+        } else {
+            -1
+        }
+    }
+
+    /// spawn
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        // ---- access parent PCB exclusively
+        let mut parent_inner = self.inner_exclusive_access();
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    start_time: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: 16,
+                    stride: 0,
+                })
+            },
+        });
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+        // modify kernel_sp in trap_cx
+        // **** access child PCB exclusively
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+        // return
+        task_control_block
+        // **** release child PCB
+        // ---- release parent PCB
     }
 }
 
